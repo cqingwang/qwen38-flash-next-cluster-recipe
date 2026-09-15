@@ -1,139 +1,134 @@
 #!/usr/bin/env bash
-# Qwen3.8-Flash-Next (hibrid48: NVFP4 table on the GPU + NVFP4 output head, vLLM 0.29) on TWO DGX Sparks: TP=2 over the ConnectX link (RDMA).
-# First run: no cluster.env → ./setup.sh (finds the second box, the interconnect, opens the firewall). Then:
-# pull the image on both boxes, download the weights (once) and sync them to the worker, start the worker
-# (--headless) and the head, wait healthy. Everything model-side is recipe.yaml; the boxes are cluster.env.
-# OpenAI API on the head at :$PORT. ./stop.sh stops both, ./view.sh shows live stats + the RDMA proof.
+# qwen3.8_flash_ablit 双节点启动器。
+# 受管模式只使用总控注入的宿主机绝对模型路径：不下载、不复制、不创建 HF cache 视图。
 set -euo pipefail
-cd "$(dirname "$0")"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 # shellcheck source=lib.sh
 source lib.sh
-command -v docker >/dev/null || { echo "docker is required"; exit 1; }
 
-# 0. boxes — none configured yet? set the cluster up first.
-if ! have_cluster; then
-  echo "· no cluster.env — running ./setup.sh first"
-  ./setup.sh
-fi
-load_cluster
-ssh_w true 2>/dev/null || { echo "✗ cannot reach the worker $WORKER — rerun ./setup.sh"; exit 1; }
+info() { echo "[INFO] $*"; }
+ok() { echo "[ OK ] $*"; }
+fail() { echo "[ERR ] $*" >&2; exit 1; }
 
-IMAGE="$(rkey server image)";   PORT="$(rkey server port)";   HOST="$(rkey server host)";  HOST="${HOST:-127.0.0.1}"
-HF_REPO="$(rkey server model)"; MPORT="$(rkey server master_port)"; MPORT="${MPORT:-25000}"
-MODELS_DIR="$(rkey server models_dir)"; CACHE_DIR="$(rkey server cache_dir)"; CPUSET="$(rkey server cpuset)"
-mkdir -p "$MODELS_DIR" "$CACHE_DIR"
-MODELS_ABS="$(cd "$MODELS_DIR" && pwd)"; CACHE_ABS="$(cd "$CACHE_DIR" && pwd)"
-LOCAL_NAME="$(basename "$HF_REPO")"; MODEL_DIR="$MODELS_ABS/$LOCAL_NAME"
-ssh_w "mkdir -p '$MODELS_ABS' '$CACHE_ABS'"
+[ -f .env ] || fail "缺少 .env；请从 /opt/spark/deploy.sh start 生成受管配置"
+# shellcheck disable=SC1091
+source .env
 
-# 1. image on BOTH boxes (a public tag — each box pulls; no-op when present)
-echo "· image $IMAGE — head"; docker pull -q "$IMAGE" >/dev/null || docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "✗ cannot pull $IMAGE"; exit 1; }
-echo "· image $IMAGE — worker"; ssh_w "docker pull -q '$IMAGE' >/dev/null || docker image inspect '$IMAGE' >/dev/null 2>&1" || { echo "✗ worker cannot pull $IMAGE"; exit 1; }
+MODEL_PATH="${MODEL_PATH:-}"
+CONTAINER_MODEL_PATH="${CONTAINER_MODEL_PATH:-/models}"
+MODEL_ID="${MODEL_ID:-}"
+HEAD_IP="${HEAD_IP:-}"
+WORKER_IP="${WORKER_IP:-}"
+WORKER_SSH="${WORKER_SSH:-}"
+IFACE="${IFACE:-}"
+WORKER_IFACE="${WORKER_IFACE:-$IFACE}"
+IB_HCA="${IB_HCA:-}"
+WORKER_IB_HCA="${WORKER_IB_HCA:-$IB_HCA}"
+IB_GID_INDEX="${IB_GID_INDEX:-3}"
+API_HOST="${API_HOST:-127.0.0.1}"
+PORT="${PORT:-8888}"
+MASTER_PORT="${MASTER_PORT:-25000}"
+TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-2}"
+NNODES="${NNODES:-2}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-$(rkey vllm max-model-len)}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$MODEL_ID}"
+IMAGE="${IMAGE:-$(rkey server image)}"
+CPUSET="${CPUSET:-$(rkey server cpuset)}"
+RUNTIME_ASSETS="${RUNTIME_ASSETS:-/opt/models/runtime_assets}"
+CACHE_DIR="${CACHE_DIR:-$RUNTIME_ASSETS/qwen3.8_flash_ablit}"
+NAME="${NAME:-qwen38-flash-next-ablit-cluster}"
 
-# 2. weights: ~99G, resumable — download on the head, then sync to the worker at the SAME path
-# "complete" = the index is there AND no partial blob is left behind by an interrupted download (huggingface_hub keeps
-# them under .cache/huggingface/download/*.incomplete and resumes them) — the index lands early, so it alone proves nothing.
-if [ ! -f "$MODEL_DIR/model.safetensors.index.json" ] || [ -n "$(find "$MODEL_DIR/.cache" -name '*.incomplete' -print -quit 2>/dev/null)" ]; then
-  hf_access "$HF_REPO" || exit 1
-  echo "· downloading $HF_REPO -> $MODEL_DIR"
-  if command -v hf >/dev/null; then
-    hf download "$HF_REPO" --local-dir "$MODEL_DIR"
-  else
-    TTY=""; [ -t 1 ] && TTY="-t"
-    # the container runs as root — hand the files back to the host user afterwards (a root-owned .cache/ with 0600
-    # files breaks the rsync to the worker; seen 2026-09-06)
-    docker run --rm $TTY -e HF_TOKEN -v "$MODELS_ABS:/dl" --entrypoint python3 "$IMAGE" \
-      -c "from huggingface_hub import snapshot_download; import subprocess; snapshot_download('$HF_REPO', local_dir='/dl/$LOCAL_NAME'); subprocess.run(['chown', '-R', '$(id -u):$(id -g)', '/dl/$LOCAL_NAME'], check=False)"
-  fi
-fi
-if ! ssh_w "[ -f '$MODEL_DIR/model.safetensors.index.json' ]"; then
-  echo "· syncing weights to the worker (one-time, ~99G over ssh — resumable, rerun if interrupted)"
-  # .cache/ = huggingface_hub's download bookkeeping; the worker never reads it
-  rsync -a --size-only --info=progress2 --exclude '.cache/' -e "ssh -o BatchMode=yes" "$MODEL_DIR/" "$WORKER:$MODEL_DIR/"
-fi
-echo "✓ weights on both boxes: $MODEL_DIR"
-# The container mounts the kit's models/ folder at /models, nothing else — a symlink for models/<name> would dangle
-# inside the container (its target is outside the mount) and vLLM would mistake the path for a Hugging Face repo id.
-# So models/<name> must be a REAL directory: a download, or a hardlink copy (`cp -al /path/to/checkpoint models/<name>`,
-# instant, zero extra space, same filesystem) — never a symlink.
-for side in head worker; do
-  if [ "$side" = head ]; then islink=$([ -L "$MODEL_DIR" ] && echo yes || echo no); else islink=$(ssh_w "[ -L '$MODEL_DIR' ] && echo yes || echo no"); fi
-  if [ "$islink" = yes ]; then
-    echo "✗ $side: $MODEL_DIR is a symlink — the container cannot follow it. Replace it with a real directory:"
-    echo "    rm $MODEL_DIR && cp -al /path/to/Qwen3.8-Flash-Next-hibrid46 $MODEL_DIR     # hardlink copy, instant"
-    exit 1
-  fi
+for required in MODEL_PATH MODEL_ID HEAD_IP WORKER_IP WORKER_SSH IFACE IB_HCA IMAGE MAX_MODEL_LEN SERVED_MODEL_NAME; do
+  [ -n "${!required:-}" ] || fail "缺少必需配置: $required"
 done
+case "$MODEL_PATH" in /*) ;; *) fail "MODEL_PATH 必须是宿主机绝对路径: $MODEL_PATH" ;; esac
+[ -d "$MODEL_PATH" ] || fail "head 模型目录不存在: $MODEL_PATH"
+[ ! -L "$MODEL_PATH" ] || fail "MODEL_PATH 不能是符号链接: $MODEL_PATH"
+[ -f "$MODEL_PATH/config.json" ] || fail "模型缺少 config.json: $MODEL_PATH"
+[ -f "$MODEL_PATH/model.safetensors.index.json" ] || fail "模型缺少 safetensors 索引: $MODEL_PATH"
+case "$CONTAINER_MODEL_PATH" in /*) ;; *) fail "CONTAINER_MODEL_PATH 必须是绝对路径" ;; esac
 
+ssh_worker() { ssh -o BatchMode=yes -o ConnectTimeout=8 "$WORKER_SSH" "$@"; }
+remote_model_q="$(printf '%q' "$MODEL_PATH")"
+ssh_worker "test -d $remote_model_q && test ! -L $remote_model_q && test -f $remote_model_q/config.json && test -f $remote_model_q/model.safetensors.index.json" \
+  || fail "worker 缺少同一真实模型目录或索引: $MODEL_PATH"
+ok "两端模型已预置: $MODEL_PATH（不复制）"
 
-# 4. compose the docker run for a rank. Host networking + the three RDMA flags (without them NCCL silently
-#    falls back to TCP over the same cable — half the speed, no error). Per-box pins: NCCL/gloo on the
-#    interconnect iface, VLLM_HOST_IP = that box's interconnect IP (the LAN must never carry cluster traffic).
-ENVS=(); while IFS=$'\t' read -r k v; do [ -n "$k" ] && ENVS+=(-e "$k=$v"); done < <(rsection env)
-FLAGS=(); while IFS=$'\t' read -r k v; do
-  case "$v" in true) FLAGS+=("--$k");; false|null|"") ;; *) FLAGS+=("--$k" "$v");; esac
+mkdir -p "$CACHE_DIR"
+ssh_worker "mkdir -p '$CACHE_DIR'"
+
+ensure_image() {
+  local side="$1"
+  if [ "$side" = head ]; then
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull -q "$IMAGE" >/dev/null
+  else
+    ssh_worker "docker image inspect '$IMAGE' >/dev/null 2>&1 || docker pull -q '$IMAGE' >/dev/null"
+  fi
+}
+ensure_image head || fail "head 无法准备镜像: $IMAGE"
+ensure_image worker || fail "worker 无法准备镜像: $IMAGE"
+
+ENVS=(-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 -e VLLM_CACHE_ROOT=/cache/vllm-cache)
+while IFS=$'\t' read -r key value; do
+  [ -n "$key" ] && ENVS+=(-e "$key=$value")
+done < <(rsection env)
+
+FLAGS=()
+while IFS=$'\t' read -r key value; do
+  case "$key" in
+    max-model-len|served-model-name) continue ;;
+  esac
+  case "$value" in
+    true) FLAGS+=("--$key") ;;
+    false|null|"") ;;
+    *) FLAGS+=("--$key" "$value") ;;
+  esac
 done < <(rsection vllm)
-compose() {  # compose <rank> <iface> <ic-ip> <hca> <has-rdma yes|no>  → prints the docker run command (quoted)
-  local rank=$1 iface=$2 ic=$3 hca=$4 rdma=$5 a=()
+FLAGS+=(--max-model-len "$MAX_MODEL_LEN" --served-model-name "$SERVED_MODEL_NAME")
+
+compose() {
+  local rank="$1" iface="$2" ic="$3" hca="$4" a=()
   a=(docker run -d --name "$NAME" --gpus all --ipc=host --network host --cap-add SYS_PTRACE)
-  [ "$rdma" = yes ] && a+=(--device /dev/infiniband --cap-add IPC_LOCK --ulimit memlock=-1:-1)
+  [ -d /dev/infiniband ] && a+=(--device /dev/infiniband --cap-add IPC_LOCK --ulimit memlock=-1:-1)
   [ -n "$CPUSET" ] && a+=(--cpuset-cpus "$CPUSET")
-  a+=(-v "$MODELS_ABS:/models" -v "$CACHE_ABS:/cache"
-      -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1
-      -e FLASHINFER_WORKSPACE_BASE=/cache/flashinfer-workspace -e VLLM_CACHE_ROOT=/cache/vllm-cache
-      -e "NCCL_SOCKET_IFNAME=$iface" -e "GLOO_SOCKET_IFNAME=$iface" -e "VLLM_HOST_IP=$ic" -e NCCL_IB_DISABLE=0)
-  [ -n "$hca" ] && a+=(-e "NCCL_IB_HCA=$hca")
-  a+=("${ENVS[@]}" --entrypoint vllm "$IMAGE" serve "/models/$LOCAL_NAME" --host "$HOST" --port "$PORT"
-      --nnodes 2 --node-rank "$rank" --master-addr "$HEAD_IC" --master-port "$MPORT" --tensor-parallel-size 2)
+  # 模型目录是唯一权重来源，必须保留只读挂载；缓存与权重完全分离。
+  a+=(-v "$MODEL_PATH:$CONTAINER_MODEL_PATH:ro" -v "$CACHE_DIR:/cache")
+  a+=("${ENVS[@]}" -e "NCCL_SOCKET_IFNAME=$iface" -e "GLOO_SOCKET_IFNAME=$iface"
+      -e "VLLM_HOST_IP=$ic" -e "NCCL_IB_HCA=$hca" -e "NCCL_IB_GID_INDEX=$IB_GID_INDEX"
+      -e NCCL_IB_DISABLE=0 --entrypoint vllm "$IMAGE" serve "$CONTAINER_MODEL_PATH"
+      --host "$API_HOST" --port "$PORT" --nnodes "$NNODES" --node-rank "$rank"
+      --master-addr "$HEAD_IP" --master-port "$MASTER_PORT"
+      --tensor-parallel-size "$TENSOR_PARALLEL_SIZE")
   [ "$rank" != 0 ] && a+=(--headless)
   a+=("${FLAGS[@]}")
   printf '%q ' "${a[@]}"
 }
-HEAD_RDMA=$([ -d /dev/infiniband ] && echo yes || echo no)
-WORKER_RDMA=$(ssh_w "[ -d /dev/infiniband ] && echo yes || echo no")
-[ "$HEAD_RDMA$WORKER_RDMA" = yesyes ] || echo "  ⚠ RDMA not available on both boxes (head $HEAD_RDMA, worker $WORKER_RDMA) — running NCCL over TCP"
-compaction_check
 
-# 5. launch: clear old containers, then GATE on memory (unified memory needs ~30-60 s after a container dies;
-#    launching earlier = a phantom CUDA OOM), then HEAD first (the rendezvous master), then the worker — the order
-#    every successful TP=2 boot of this model used; the worker retries the connect until the head listens.
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-ssh_w "docker rm -f '$NAME' >/dev/null 2>&1 || true"
-wait_mem 100 120 || exit 1
-evict_cache "$MODEL_DIR"
-echo "· starting head (rank 0) — API on $HOST:$PORT once healthy (first boot ~10 min: load + compile warmup)"
-eval "$(compose 0 "$HEAD_IFACE" "$HEAD_IC" "$HEAD_HCA" "$HEAD_RDMA")" >/dev/null
+ssh_worker "docker rm -f '$NAME' >/dev/null 2>&1 || true"
+info "启动 head rank=0，API=${API_HOST}:${PORT}，模型=${MODEL_ID}"
+eval "$(compose 0 "$IFACE" "$HEAD_IP" "$IB_HCA")" >/dev/null
 sleep 2
-echo "· starting worker ($WORKER_HOST, rank 1, --headless)"
-ssh_w "$(compose 1 "$WORKER_IFACE" "$WORKER_IC" "$WORKER_HCA" "$WORKER_RDMA") >/dev/null"
+info "启动 worker rank=1（${WORKER_SSH}）"
+ssh_worker "$(compose 1 "$WORKER_IFACE" "$WORKER_IP" "$WORKER_IB_HCA") >/dev/null"
 
-# 6. stream the head's logs until healthy; fail fast if either container dies
-echo "· streaming engine logs until healthy (Ctrl-C detaches; the cluster keeps booting)"
-docker logs -f "$NAME" 2>&1 &
-LOGS=$!
-trap 'kill "$LOGS" 2>/dev/null' EXIT INT TERM
-for i in $(seq 1 360); do
-  if curl -sf -m 3 "http://$HOST:$PORT/health" >/dev/null 2>&1; then
-    kill "$LOGS" 2>/dev/null; wait "$LOGS" 2>/dev/null
-    echo
-    echo "──────────────────────────────────────────────────────────"
-    echo "✓ cluster serving — OpenAI-compatible API is live on the head"
-    echo "    endpoint : http://$HOST:$PORT/v1"
-    echo "    monitor  : ./view.sh          (throughput, acceptance, RDMA proof)"
-    echo "    logs     : docker logs -f $NAME      · worker: ssh $WORKER docker logs -f $NAME"
-    echo "    stop     : ./stop.sh          (both boxes)"
-    echo "──────────────────────────────────────────────────────────"
+CHECK_HOST="$API_HOST"
+[ "$CHECK_HOST" = 0.0.0.0 ] && CHECK_HOST=127.0.0.1
+for _ in $(seq 1 360); do
+  if curl -sf -m 3 "http://${CHECK_HOST}:${PORT}/health" >/dev/null 2>&1; then
+    ok "双节点服务健康: http://${API_HOST}:${PORT}/v1"
     exit 0
   fi
-  if ! docker ps -q --filter "name=^$NAME\$" | grep -q .; then
-    kill "$LOGS" 2>/dev/null; wait "$LOGS" 2>/dev/null
-    echo "✗ head container exited — see above. Worker's last lines:"; ssh_w "docker logs --tail 20 '$NAME'" 2>&1 | tail -20; exit 1
+  if ! docker ps -q --filter "name=^${NAME}$" | grep -q .; then
+    docker logs --tail 80 "$NAME" >&2 || true
+    fail "head 容器已退出"
   fi
-  if ! ssh_w "docker ps -q --filter 'name=^$NAME\$' | grep -q ." 2>/dev/null; then
-    kill "$LOGS" 2>/dev/null; wait "$LOGS" 2>/dev/null
-    echo "✗ worker container exited:"; ssh_w "docker logs --tail 40 '$NAME'" 2>&1 | tail -40
-    docker rm -f "$NAME" >/dev/null 2>&1; exit 1
+  if ! ssh_worker "docker ps -q --filter 'name=^$NAME\$' | grep -q ." 2>/dev/null; then
+    ssh_worker "docker logs --tail 80 '$NAME'" >&2 || true
+    fail "worker 容器已退出"
   fi
   sleep 5
 done
-echo "✗ not healthy after 30 min — still booting? watch: docker logs -f $NAME"; exit 1
+fail "服务在 30 分钟内未通过 /health；请查看 docker logs $NAME"
