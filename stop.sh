@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# Stop and remove the serve container on BOTH boxes. Weights and caches stay — ./run.sh brings it back fast.
+# 停止并删除 Qwen 四节点推理容器；模型和编译缓存保留。
 set -euo pipefail
 cd "$(dirname "$0")"
-# shellcheck source=lib.sh
-source lib.sh
-docker rm -f "$NAME" >/dev/null 2>&1 && echo "✓ head stopped" || echo "· head: not running"
-if [ -f .env ]; then
-  # 总控受管模式：worker 地址来自 .env，不触发交互式 setup.sh。
-  # shellcheck disable=SC1091
-  source .env
-  [ -n "${WORKER_SSH:-}" ] || { echo "· .env 没有 WORKER_SSH — worker untouched"; exit 0; }
-  ssh -o BatchMode=yes -o ConnectTimeout=8 "$WORKER_SSH" "docker rm -f '$NAME' >/dev/null 2>&1" \
-    && echo "✓ worker stopped ($WORKER_SSH)" || echo "· worker: not running"
-elif load_cluster 2>/dev/null; then
-  ssh_w "docker rm -f '$NAME' >/dev/null 2>&1" && echo "✓ worker stopped ($WORKER_HOST)" || echo "· worker: not running"
-else
-  echo "· no cluster.env — worker untouched"
-fi
+source .env
+
+CONTAINER_HEAD="${CONTAINER_HEAD:-${NAME:-qwen38-flash-next-ablit-cluster}}"
+CONTAINER_WORKER="${CONTAINER_WORKER:-$CONTAINER_HEAD}"
+CONTAINER_WORKER2="${CONTAINER_WORKER2:-$CONTAINER_WORKER}"
+CONTAINER_WORKER3="${CONTAINER_WORKER3:-$CONTAINER_WORKER2}"
+WORKER_SSH="${WORKER_SSH:-}"
+WORKER2_SSH="${WORKER2_SSH:-}"
+WORKER3_SSH="${WORKER3_SSH:-}"
+
+docker rm -f "$CONTAINER_HEAD" >/dev/null 2>&1 && echo "✓ head stopped" || echo "· head: not running"
+stop_worker() {
+  local rank="$1" target="$2" container="$3"
+  [ -n "$target" ] || { echo "· worker rank=$rank: no SSH target"; return 0; }
+  ssh -T -o BatchMode=yes -o ConnectTimeout=8 "$target" "docker rm -f '$container' >/dev/null 2>&1" \
+    && echo "✓ worker rank=$rank stopped ($target)" || echo "· worker rank=$rank: not running"
+}
+stop_worker 1 "$WORKER_SSH" "$CONTAINER_WORKER"
+stop_worker 2 "$WORKER2_SSH" "$CONTAINER_WORKER2"
+stop_worker 3 "$WORKER3_SSH" "$CONTAINER_WORKER3"

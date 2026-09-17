@@ -1,4 +1,4 @@
-# Qwen3.8-Flash-Next on two DGX Sparks
+# Qwen3.8-Flash-Next on four DGX Sparks
 
 ### Two checkpoints: `hibrid48`, the default — and `hibrid48-uncensored`, made from it (abliterated, gated). Switch with one line in `recipe.yaml`
 
@@ -7,7 +7,9 @@ and [`hibrid48-uncensored`](https://huggingface.co/myllmbox/Qwen3.8-Flash-Next-h
 body, no refusals, no guardrails — gated, research / private use). Same stack. To switch: in `recipe.yaml`
 comment the active `model:` line and uncomment the other, then `./run.sh`. Details in [Which checkpoint](#which-checkpoint).
 
-Two boxes, one model, RDMA. **22 engine steps/s**: 92 tok/s single-stream writing code, **107 tok/s peak**. Three commands.
+Four boxes, one model, RDMA. The managed Spark deployment uses the existing physical ring without recabling and assigns
+the reverse logical order `spark-a(rank 0) -> spark-c(rank 1) -> spark-d(rank 2) -> spark-b(rank 3) -> spark-a`.
+The published performance numbers below are from the original two-box recipe and are not a four-box measurement.
 
 ## Quality (measured on this serve, thinking on)
 
@@ -34,7 +36,7 @@ The runner (`bench/quality/` in the myllmbox repo: harness driver, answer extrac
 and a side-by-side table tool) works against any OpenAI-compatible endpoint — rerun it and count. hibrid47 on the same
 questions is the pending A/B; until then these are the model's numbers, not a measured cost of the 4-bit head.
 
-## Measured performance (this exact stack, 2× DGX Spark, RDMA, K=4, `vm.compaction_proactiveness=0`)
+## Measured performance (original two-box recipe, RDMA, K=4, `vm.compaction_proactiveness=0`)
 
 **v3 ladder (2026-09-13, hibrid48 on vLLM 0.29, 28G bf16 pin, Marlin MoE)** — same prompt, same windows, same rules as the v2 table below (rungs 2–32 measured on the v3 kit boot; c=48 pending).
 
@@ -114,7 +116,8 @@ cd qwen38-flash-next-cluster-recipe
 
 **Hugging Face token.** Anonymous downloads are rate-limited, and gated models (license-agreement repos, e.g. uncensored variants) refuse anonymous access. `run.sh` looks for `HF_TOKEN`, then `~/.cache/huggingface/token` (`hf auth login`), and asks for one when the repo is gated — after you accepted its agreement on the model page. Nothing is stored by the kit.
 
-`./stop.sh` stops both boxes. `./view.sh` shows live stats plus the RDMA proof. Requirements: two DGX Sparks
+`./stop.sh` stops all four boxes in the managed Spark deployment. `./view.sh` remains a two-box standalone helper;
+the managed deployment uses `deploy.sh stop`. Requirements: four DGX Sparks
 with docker + the NVIDIA container runtime, connected by their ConnectX ports (a direct cable or a switch),
 ssh from the head to the worker (a password once — `setup.sh` installs a key). First boot reaches healthy in
 ~10 minutes after the weights are on both boxes; later boots are faster.
@@ -128,8 +131,8 @@ single `ufw allow from <peer>` it would run and asks first), creates the model/c
 `cluster.env`. Rerun `./setup.sh` after re-cabling.
 
 **All model configuration lives in [`recipe.yaml`](recipe.yaml)** — image, weights repo, port, KV budget, every
-vLLM flag. The cluster flags (`--nnodes 2`, ranks, rendezvous address, TP=2, `--headless` on the worker) and the
-per-box NCCL/gloo interface pins are added by `run.sh` from `cluster.env`; you never write them.
+vLLM flag. The cluster flags (`--nnodes 4`, ranks 0..3, rendezvous address, TP=4, `--headless` on workers) and the
+per-box NCCL/gloo interface pins are added by the managed `run.sh` from `.env`; you never write them.
 
 ```bash
 curl http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{
