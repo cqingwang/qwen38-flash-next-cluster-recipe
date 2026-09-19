@@ -2,7 +2,8 @@
 # 停止并删除 Qwen 四节点推理容器；模型和编译缓存保留。
 set -euo pipefail
 cd "$(dirname "$0")"
-source .env
+ENV_FILE="${ENV_FILE:-.env}"
+source "$ENV_FILE"
 
 CONTAINER_HEAD="${CONTAINER_HEAD:-${NAME:-qwen38-flash-next-ablit-cluster}}"
 CONTAINER_WORKER="${CONTAINER_WORKER:-$CONTAINER_HEAD}"

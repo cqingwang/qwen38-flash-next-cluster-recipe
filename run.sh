@@ -9,8 +9,9 @@ info() { echo "[INFO] $*"; }
 ok() { echo "[ OK ] $*"; }
 fail() { echo "[ERR ] $*" >&2; exit 1; }
 
-[ -f .env ] || fail "缺少 .env；请从 /opt/spark/deploy.sh start 生成受管配置"
-source .env
+ENV_FILE="${ENV_FILE:-.env}"
+[ -f "$ENV_FILE" ] || fail "缺少环境文件：$ENV_FILE；请从 /opt/spark/deploy.sh start 生成受管配置"
+source "$ENV_FILE"
 
 MODEL_PATH="${MODEL_PATH:-}"
 CONTAINER_MODEL_PATH="${CONTAINER_MODEL_PATH:-/models}"
