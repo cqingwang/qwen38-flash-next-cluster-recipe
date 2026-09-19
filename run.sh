@@ -25,6 +25,10 @@ WORKER3_IP="${WORKER3_IP:-}"
 WORKER_SSH="${WORKER_SSH:-}"
 WORKER2_SSH="${WORKER2_SSH:-}"
 WORKER3_SSH="${WORKER3_SSH:-}"
+HEAD_FABRIC_IFACES="${HEAD_FABRIC_IFACES:-}"
+WORKER_FABRIC_IFACES="${WORKER_FABRIC_IFACES:-}"
+WORKER2_FABRIC_IFACES="${WORKER2_FABRIC_IFACES:-$WORKER_FABRIC_IFACES}"
+WORKER3_FABRIC_IFACES="${WORKER3_FABRIC_IFACES:-$WORKER2_FABRIC_IFACES}"
 HEAD_SOCKET_IFACE="${HEAD_SOCKET_IFACE:-${IFACE:-}}"
 WORKER_SOCKET_IFACE="${WORKER_SOCKET_IFACE:-$HEAD_SOCKET_IFACE}"
 WORKER2_SOCKET_IFACE="${WORKER2_SOCKET_IFACE:-$WORKER_SOCKET_IFACE}"
@@ -37,12 +41,23 @@ PEER_HCA_RANK0="${PEER_HCA_RANK0:-}"
 PEER_HCA_RANK1="${PEER_HCA_RANK1:-}"
 PEER_HCA_RANK2="${PEER_HCA_RANK2:-}"
 PEER_HCA_RANK3="${PEER_HCA_RANK3:-}"
-IB_GID_INDEX="${NCCL_IB_GID_INDEX:-${IB_GID_INDEX:-3}}"
+NCCL_IB_GID_INDEX_FORCE="${NCCL_IB_GID_INDEX_FORCE:-}"
+IB_GID_INDEX="${NCCL_IB_GID_INDEX_FORCE:-${NCCL_IB_GID_INDEX:-${IB_GID_INDEX:-3}}}"
 NCCL_NET="${NCCL_NET:-IB}"
 NCCL_NET_PLUGIN="${NCCL_NET_PLUGIN:-none}"
 NCCL_ALGO="${NCCL_ALGO:-RING}"
+NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
+NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-1}"
 NCCL_CROSS_NIC="${NCCL_CROSS_NIC:-1}"
 NCCL_IB_MERGE_NICS="${NCCL_IB_MERGE_NICS:-0}"
+NCCL_IB_SUBNET_AWARE_ROUTING="${NCCL_IB_SUBNET_AWARE_ROUTING:-1}"
+NCCL_IB_TIMEOUT="${NCCL_IB_TIMEOUT:-1000}"
+NCCL_IB_RETRY_CNT="${NCCL_IB_RETRY_CNT:-7}"
+NCCL_IB_TOS="${NCCL_IB_TOS:-46}"
+NCCL_MIN_NCHANNELS="${NCCL_MIN_NCHANNELS:-4}"
+NCCL_SET_THREAD_NAME="${NCCL_SET_THREAD_NAME:-1}"
+NCCL_TUNER_THRESHOLD="${NCCL_TUNER_THRESHOLD:-40960}"
+NCCL_CUMEM_HOST_ENABLE="${NCCL_CUMEM_HOST_ENABLE:-0}"
 API_HOST="${API_HOST:-0.0.0.0}"
 PORT="${PORT:-8888}"
 MASTER_PORT="${MASTER_PORT:-25000}"
@@ -104,6 +119,7 @@ rank_value() {
     socket:0) printf '%s' "$HEAD_SOCKET_IFACE" ;; socket:1) printf '%s' "$WORKER_SOCKET_IFACE" ;; socket:2) printf '%s' "$WORKER2_SOCKET_IFACE" ;; socket:3) printf '%s' "$WORKER3_SOCKET_IFACE" ;;
     hca:0) printf '%s' "$HEAD_HCA" ;; hca:1) printf '%s' "$WORKER_HCA" ;; hca:2) printf '%s' "$WORKER2_HCA" ;; hca:3) printf '%s' "$WORKER3_HCA" ;;
     peer:0) printf '%s' "$PEER_HCA_RANK0" ;; peer:1) printf '%s' "$PEER_HCA_RANK1" ;; peer:2) printf '%s' "$PEER_HCA_RANK2" ;; peer:3) printf '%s' "$PEER_HCA_RANK3" ;;
+    fabric:0) printf '%s' "$HEAD_FABRIC_IFACES" ;; fabric:1) printf '%s' "$WORKER_FABRIC_IFACES" ;; fabric:2) printf '%s' "$WORKER2_FABRIC_IFACES" ;; fabric:3) printf '%s' "$WORKER3_FABRIC_IFACES" ;;
     container:0) printf '%s' "$CONTAINER_HEAD" ;; container:1) printf '%s' "$CONTAINER_WORKER" ;; container:2) printf '%s' "$CONTAINER_WORKER2" ;; container:3) printf '%s' "$CONTAINER_WORKER3" ;;
     *) fail "非法 rank/字段: $field:$rank" ;;
   esac
@@ -172,6 +188,22 @@ check_rank_image() {
   fi
 }
 
+check_rank_fabric() {
+  local rank="$1" fabric_ifaces iface remote_command
+  fabric_ifaces="$(rank_value "$rank" fabric | tr ',' ' ')"
+  [ -n "$fabric_ifaces" ] || fail "rank $rank 缺少物理环 fabric 网卡配置"
+  if [ "$rank" = 0 ]; then
+    for iface in $fabric_ifaces; do
+      [ -d "/sys/class/net/$iface/device/infiniband" ] \
+        || fail "rank 0 fabric 网卡未绑定 RDMA 设备: $iface"
+    done
+    return 0
+  fi
+  remote_command="for iface in $fabric_ifaces; do test -d /sys/class/net/\$iface/device/infiniband || exit 1; done"
+  worker_ssh_rank "$rank" "$remote_command" \
+    || fail "rank $rank fabric 网卡未绑定 RDMA 设备: $fabric_ifaces"
+}
+
 build_flags() {
   local key value
   FLAGS=()
@@ -210,7 +242,12 @@ compose_rank() {
     -e "NCCL_SOCKET_IFNAME=$socket" -e "GLOO_SOCKET_IFNAME=$socket" -e "VLLM_HOST_IP=$ip"
     -e "NCCL_IB_HCA=$hca" -e "NCCL_IB_PEER_HCA=$peer" -e "NCCL_IB_GID_INDEX=$IB_GID_INDEX"
     -e NCCL_IB_DISABLE=0 -e "NCCL_NET=$NCCL_NET" -e "NCCL_NET_PLUGIN=$NCCL_NET_PLUGIN" -e "NCCL_ALGO=$NCCL_ALGO"
+    -e "NCCL_P2P_DISABLE=$NCCL_P2P_DISABLE" -e "NCCL_SHM_DISABLE=$NCCL_SHM_DISABLE"
     -e NCCL_IGNORE_CPU_AFFINITY=1 -e "NCCL_CROSS_NIC=$NCCL_CROSS_NIC" -e "NCCL_IB_MERGE_NICS=$NCCL_IB_MERGE_NICS"
+    -e "NCCL_IB_SUBNET_AWARE_ROUTING=$NCCL_IB_SUBNET_AWARE_ROUTING" -e "NCCL_IB_TIMEOUT=$NCCL_IB_TIMEOUT"
+    -e "NCCL_IB_RETRY_CNT=$NCCL_IB_RETRY_CNT" -e "NCCL_IB_TOS=$NCCL_IB_TOS"
+    -e "NCCL_MIN_NCHANNELS=$NCCL_MIN_NCHANNELS" -e "NCCL_SET_THREAD_NAME=$NCCL_SET_THREAD_NAME"
+    -e "NCCL_TUNER_THRESHOLD=$NCCL_TUNER_THRESHOLD" -e "NCCL_CUMEM_HOST_ENABLE=$NCCL_CUMEM_HOST_ENABLE"
   )
   if [ "$USE_HOST_NCCL" = 1 ]; then
     env_args+=(-e "NCCL_HOST_DIR=$NCCL_CONTAINER_DIR" -e "LD_PRELOAD=$NCCL_PIN_CONTAINER $NCCL_CONTAINER_DIR/$NCCL_SO_NAME")
@@ -238,6 +275,7 @@ RANKS=(0 1)
 mkdir -p "$CACHE_DIR"
 for rank in "${RANKS[@]}"; do
   check_rank_assets "$rank"
+  check_rank_fabric "$rank"
   if [ "$rank" = 0 ]; then
     mkdir -p "$(rank_cache_dir "$rank")"
   else
