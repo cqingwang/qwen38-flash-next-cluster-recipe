@@ -9,8 +9,9 @@ info() { echo "[INFO] $*"; }
 ok() { echo "[ OK ] $*"; }
 fail() { echo "[ERR ] $*" >&2; exit 1; }
 
-[ -f .env ] || fail "缺少 .env；请从 /opt/spark/deploy.sh start 生成受管配置"
-source .env
+ENV_FILE="${ENV_FILE:-.env}"
+[ -f "$ENV_FILE" ] || fail "缺少环境文件：$ENV_FILE；请从 /opt/spark/deploy.sh start 生成受管配置"
+source "$ENV_FILE"
 
 MODEL_PATH="${MODEL_PATH:-}"
 CONTAINER_MODEL_PATH="${CONTAINER_MODEL_PATH:-/models}"
@@ -51,10 +52,10 @@ NCCL_CONTAINER_DIR="${NCCL_CONTAINER_DIR:-/nccl}"
 NCCL_SO_NAME="${NCCL_SO_NAME:-libnccl.so.2}"
 NCCL_PIN_HOST="${NCCL_PIN_HOST:-/opt/aicad-prod/lib/libncclpin.so}"
 NCCL_PIN_CONTAINER="${NCCL_PIN_CONTAINER:-/opt/libncclpin.so}"
-CONTAINER_HEAD="${CONTAINER_HEAD:-qwen38-flash-next-ablit-tp4-head}"
-CONTAINER_WORKER="${CONTAINER_WORKER:-qwen38-flash-next-ablit-tp4-w1}"
-CONTAINER_WORKER2="${CONTAINER_WORKER2:-qwen38-flash-next-ablit-tp4-w2}"
-CONTAINER_WORKER3="${CONTAINER_WORKER3:-qwen38-flash-next-ablit-tp4-w3}"
+CONTAINER_HEAD="${CONTAINER_HEAD:-qwen38-flash-next-switchless-tp4-head}"
+CONTAINER_WORKER="${CONTAINER_WORKER:-qwen38-flash-next-switchless-tp4-w1}"
+CONTAINER_WORKER2="${CONTAINER_WORKER2:-qwen38-flash-next-switchless-tp4-w2}"
+CONTAINER_WORKER3="${CONTAINER_WORKER3:-qwen38-flash-next-switchless-tp4-w3}"
 
 [ "$NNODES" = 4 ] || fail "Qwen 四节点启动器要求 NNODES=4，实际为 $NNODES"
 [ "$TENSOR_PARALLEL_SIZE" = 4 ] || fail "Qwen 四节点启动器要求 TENSOR_PARALLEL_SIZE=4，实际为 $TENSOR_PARALLEL_SIZE"
