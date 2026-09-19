@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Qwen3.8 Flash ABLIT 四节点启动器，使用 A(0)->C(1)->D(2)->B(3) 逻辑环。
+# Qwen3.8-Flash 唯一启动源码；TP2/TP4 拓扑和参数只由目标配置目录的受管 .env 决定。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+RECIPE_FILE="${RECIPE_FILE:-$SCRIPT_DIR/recipe.yaml}"
 source lib.sh
 info() { echo "[INFO] $*"; }
 ok() { echo "[ OK ] $*"; }
@@ -16,6 +17,7 @@ source "$ENV_FILE"
 MODEL_PATH="${MODEL_PATH:-}"
 CONTAINER_MODEL_PATH="${CONTAINER_MODEL_PATH:-/models}"
 MODEL_ID="${MODEL_ID:-}"
+TARGET_ENGINE_ID="${TARGET_ENGINE_ID:-qwen3.8_flash_switchless}"
 HEAD_IP="${HEAD_IP:-}"
 WORKER_IP="${WORKER_IP:-}"
 WORKER2_IP="${WORKER2_IP:-}"
@@ -36,6 +38,11 @@ PEER_HCA_RANK1="${PEER_HCA_RANK1:-}"
 PEER_HCA_RANK2="${PEER_HCA_RANK2:-}"
 PEER_HCA_RANK3="${PEER_HCA_RANK3:-}"
 IB_GID_INDEX="${NCCL_IB_GID_INDEX:-${IB_GID_INDEX:-3}}"
+NCCL_NET="${NCCL_NET:-IB}"
+NCCL_NET_PLUGIN="${NCCL_NET_PLUGIN:-none}"
+NCCL_ALGO="${NCCL_ALGO:-RING}"
+NCCL_CROSS_NIC="${NCCL_CROSS_NIC:-1}"
+NCCL_IB_MERGE_NICS="${NCCL_IB_MERGE_NICS:-0}"
 API_HOST="${API_HOST:-0.0.0.0}"
 PORT="${PORT:-8888}"
 MASTER_PORT="${MASTER_PORT:-25000}"
@@ -52,16 +59,28 @@ NCCL_CONTAINER_DIR="${NCCL_CONTAINER_DIR:-/nccl}"
 NCCL_SO_NAME="${NCCL_SO_NAME:-libnccl.so.2}"
 NCCL_PIN_HOST="${NCCL_PIN_HOST:-/opt/aicad-prod/lib/libncclpin.so}"
 NCCL_PIN_CONTAINER="${NCCL_PIN_CONTAINER:-/opt/libncclpin.so}"
-CONTAINER_HEAD="${CONTAINER_HEAD:-qwen38-flash-next-switchless-tp4-head}"
-CONTAINER_WORKER="${CONTAINER_WORKER:-qwen38-flash-next-switchless-tp4-w1}"
-CONTAINER_WORKER2="${CONTAINER_WORKER2:-qwen38-flash-next-switchless-tp4-w2}"
-CONTAINER_WORKER3="${CONTAINER_WORKER3:-qwen38-flash-next-switchless-tp4-w3}"
+if [ "$NNODES" = 2 ]; then
+  CONTAINER_HEAD="${CONTAINER_HEAD:-qwen38-flash-next-duo-tp2-head}"
+  CONTAINER_WORKER="${CONTAINER_WORKER:-qwen38-flash-next-duo-tp2-worker}"
+else
+  CONTAINER_HEAD="${CONTAINER_HEAD:-qwen38-flash-next-switchless-tp4-head}"
+  CONTAINER_WORKER="${CONTAINER_WORKER:-qwen38-flash-next-switchless-tp4-w1}"
+  CONTAINER_WORKER2="${CONTAINER_WORKER2:-qwen38-flash-next-switchless-tp4-w2}"
+  CONTAINER_WORKER3="${CONTAINER_WORKER3:-qwen38-flash-next-switchless-tp4-w3}"
+fi
 
-[ "$NNODES" = 4 ] || fail "Qwen 四节点启动器要求 NNODES=4，实际为 $NNODES"
-[ "$TENSOR_PARALLEL_SIZE" = 4 ] || fail "Qwen 四节点启动器要求 TENSOR_PARALLEL_SIZE=4，实际为 $TENSOR_PARALLEL_SIZE"
-for required in MODEL_PATH MODEL_ID HEAD_IP WORKER_IP WORKER2_IP WORKER3_IP WORKER_SSH WORKER2_SSH WORKER3_SSH IMAGE MAX_MODEL_LEN SERVED_MODEL_NAME HEAD_SOCKET_IFACE HEAD_HCA; do
+case "$NNODES:$TENSOR_PARALLEL_SIZE" in
+  2:2|4:4) ;;
+  *) fail "Qwen 唯一启动器只支持 TP2/NNODES=2 或 TP4/NNODES=4，实际为 NNODES=$NNODES TP=$TENSOR_PARALLEL_SIZE" ;;
+esac
+for required in MODEL_PATH MODEL_ID HEAD_IP WORKER_IP WORKER_SSH IMAGE MAX_MODEL_LEN SERVED_MODEL_NAME HEAD_SOCKET_IFACE HEAD_HCA; do
   [ -n "${!required:-}" ] || fail "缺少必需配置: $required"
 done
+if [ "$NNODES" = 4 ]; then
+  for required in WORKER2_IP WORKER3_IP WORKER2_SSH WORKER3_SSH; do
+    [ -n "${!required:-}" ] || fail "TP4 缺少必需配置: $required"
+  done
+fi
 case "$MODEL_PATH" in /*) ;; *) fail "MODEL_PATH 必须是宿主机绝对路径: $MODEL_PATH" ;; esac
 [ -d "$MODEL_PATH" ] || fail "head 模型目录不存在: $MODEL_PATH"
 [ ! -L "$MODEL_PATH" ] || fail "MODEL_PATH 不能是符号链接: $MODEL_PATH"
@@ -190,8 +209,8 @@ compose_rank() {
   env_args+=(
     -e "NCCL_SOCKET_IFNAME=$socket" -e "GLOO_SOCKET_IFNAME=$socket" -e "VLLM_HOST_IP=$ip"
     -e "NCCL_IB_HCA=$hca" -e "NCCL_IB_PEER_HCA=$peer" -e "NCCL_IB_GID_INDEX=$IB_GID_INDEX"
-    -e NCCL_IB_DISABLE=0 -e NCCL_NET=IB -e NCCL_NET_PLUGIN=none -e NCCL_ALGO=RING
-    -e NCCL_IGNORE_CPU_AFFINITY=1 -e NCCL_CROSS_NIC=1 -e NCCL_IB_MERGE_NICS=0
+    -e NCCL_IB_DISABLE=0 -e "NCCL_NET=$NCCL_NET" -e "NCCL_NET_PLUGIN=$NCCL_NET_PLUGIN" -e "NCCL_ALGO=$NCCL_ALGO"
+    -e NCCL_IGNORE_CPU_AFFINITY=1 -e "NCCL_CROSS_NIC=$NCCL_CROSS_NIC" -e "NCCL_IB_MERGE_NICS=$NCCL_IB_MERGE_NICS"
   )
   if [ "$USE_HOST_NCCL" = 1 ]; then
     env_args+=(-e "NCCL_HOST_DIR=$NCCL_CONTAINER_DIR" -e "LD_PRELOAD=$NCCL_PIN_CONTAINER $NCCL_CONTAINER_DIR/$NCCL_SO_NAME")
@@ -214,8 +233,10 @@ remove_rank_container() {
   fi
 }
 
+RANKS=(0 1)
+[ "$NNODES" = 4 ] && RANKS+=(2 3)
 mkdir -p "$CACHE_DIR"
-for rank in 0 1 2 3; do
+for rank in "${RANKS[@]}"; do
   check_rank_assets "$rank"
   if [ "$rank" = 0 ]; then
     mkdir -p "$(rank_cache_dir "$rank")"
@@ -225,13 +246,13 @@ for rank in 0 1 2 3; do
   check_rank_image "$rank"
   remove_rank_container "$rank"
 done
-ok "四节点模型、镜像和 ring-only NCCL 资产已就绪（模型不复制）"
+ok "Qwen TP${TENSOR_PARALLEL_SIZE} 模型、镜像和运行时资产已就绪（模型不复制）"
 
 build_flags
 info "启动 head rank=0，API=${API_HOST}:${PORT}，模型=${MODEL_ID}"
 eval "$(compose_rank 0)" >/dev/null
 sleep 2
-for rank in 1 2 3; do
+for rank in "${RANKS[@]:1}"; do
   info "启动 worker rank=$rank"
   worker_ssh_rank "$rank" "$(compose_rank "$rank") >/dev/null"
 done
@@ -240,10 +261,10 @@ CHECK_HOST="$API_HOST"
 [ "$CHECK_HOST" = 0.0.0.0 ] && CHECK_HOST=127.0.0.1
 for _ in $(seq 1 360); do
   if curl -sf -m 3 "http://${CHECK_HOST}:${PORT}/health" >/dev/null 2>&1; then
-    ok "四节点服务健康: http://${API_HOST}:${PORT}/v1"
+    ok "Qwen TP${TENSOR_PARALLEL_SIZE} 服务健康: http://${API_HOST}:${PORT}/v1"
     exit 0
   fi
-  for rank in 0 1 2 3; do
+  for rank in "${RANKS[@]}"; do
     container="$(rank_value "$rank" container)"
     if [ "$rank" = 0 ]; then
       if ! docker ps -q --filter "name=^${container}$" | grep -q .; then
@@ -257,4 +278,4 @@ for _ in $(seq 1 360); do
   done
   sleep 5
 done
-fail "服务在 30 分钟内未通过 /health；请查看四个 Qwen TP4 容器日志"
+fail "服务在 30 分钟内未通过 /health；请查看 Qwen TP${TENSOR_PARALLEL_SIZE} 容器日志"

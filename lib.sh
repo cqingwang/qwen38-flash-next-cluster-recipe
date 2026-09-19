@@ -3,6 +3,7 @@
 
 NAME="qwen38-flash-next-cluster"          # container name on BOTH boxes
 CLUSTER_ENV="cluster.env"                  # written by setup.sh: HEAD_*/WORKER_* (machine-specific, gitignored)
+RECIPE_FILE="${RECIPE_FILE:-recipe.yaml}" # target-specific recipe may live beside its managed .env
 
 # --- tiny recipe.yaml reader (two-level: section -> key: value; strips quotes/comments) ---------
 rkey() {  # rkey <section> <key>
@@ -11,7 +12,7 @@ rkey() {  # rkey <section> <key>
     sec==s && $1==k":" {
       sub(/^[ ]*[^:]*:[ ]*/,""); sub(/[ ]+#.*$/,"")
       gsub(/^["\x27]|["\x27]$/,""); print; exit
-    }' recipe.yaml
+    }' "$RECIPE_FILE"
 }
 rsection() {  # all key/value lines of a section, "key<TAB>value" (quotes/comments stripped)
   awk -v s="$1" '
@@ -22,7 +23,7 @@ rsection() {  # all key/value lines of a section, "key<TAB>value" (quotes/commen
       val=line; sub(/^[^:]*:[ ]*/,"",val); sub(/[ ]+#.*$/,"",val)
       gsub(/^["\x27]|["\x27]$/,"",val)
       if (key != "") print key "\t" val
-    }' recipe.yaml
+    }' "$RECIPE_FILE"
 }
 
 # --- cluster.env ----------------------------------------------------------------------------------
