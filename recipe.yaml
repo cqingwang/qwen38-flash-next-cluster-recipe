@@ -1,8 +1,9 @@
 # The one and only model config. run.sh reads THIS — the boxes themselves live in cluster.env (written by
 # setup.sh on first run, machine-specific, never committed).
 # Flag mapping: `name: value` -> --name value | `name: true` -> --name | `name: false` -> omitted.
-# Cluster flags (--nnodes 2 --node-rank N --master-addr/--master-port --tensor-parallel-size 2 --headless on the
-# worker) and the per-box NCCL/gloo interface pins are added by run.sh from cluster.env — never put them here.
+# Managed TP4 cluster flags (--nnodes 4 --node-rank N --master-addr/--master-port
+# --tensor-parallel-size 4 --headless on workers) and per-rank NCCL/gloo interface
+# pins are added by run.sh from .env — never put them here.
 
 server:
   image: myllmbox/qwen38-flash-next-cluster-vllm:v5   # pinned public tag (digest in README) = vLLM 0.29.0 (vllm/vllm-openai)
@@ -53,7 +54,7 @@ vllm:
   served-model-name: Qwen/Qwen3.8-Flash-Next
   moe-backend: marlin                           # fastest MoE kernel for NVFP4 W4A16 on the GB10 in 0.29 (+5 % steps over
                                                 # flashinfer_cutlass; the b12x backend crashed on prefix-cached long prompts)
-  pipeline-parallel-size: 1                     # TP only (TP=2 is set by run.sh = box count)
+  pipeline-parallel-size: 1                     # TP only; managed four-node run.sh sets TP=4
   distributed-executor-backend: mp              # no Ray
   gpu-memory-utilization: 0.70                  # with kv-cache-memory pinned this does not size the KV pool (verified:
                                                 # 65G of weights + the pin boot fine at 0.70)
