@@ -31,10 +31,9 @@ server:
 env:
   # The n-gram (PLE) table is an ordinary GPU parameter in hibrid47/48 — no offload worker.
   MBX_FUSED_DRAFT: "1"
-  MBX_PLE_REPLICATE: "0"                        # HALF the table per box (14.3G), exchanged per gather. On vLLM 0.30 this
-                                                # measured the SAME speed as the full table per box at 1/16/32 concurrent
-                                                # (it was slower on 0.29) and frees 13.4G per box → the 41G KV pin below.
-                                                # "1" = the full table on each box (then drop kv-cache-memory back to 28G)
+  MBX_PLE_REPLICATE: "1"                        # Local Spark ring default: full table on every rank, eliminating per-gather
+                                                # PLE exchange. Pair with the 28G KV pin below; the v6 41G/half-table recipe
+                                                # is retained only as the upstream two-box reference in README.md.
   # No OMP_NUM_THREADS: vLLM sizes its threads itself (many for the load, one for serving); a fixed value hurts one phase.
   PYTHONUNBUFFERED: "1"                         # rank-1 load progress actually shows in docker logs
   TORCH_NCCL_ASYNC_ERROR_HANDLING: "1"
@@ -67,10 +66,8 @@ vllm:
   distributed-executor-backend: mp              # no Ray
   gpu-memory-utilization: 0.70                  # with kv-cache-memory pinned this does not size the KV pool (verified:
                                                 # 65G of weights + the pin boot fine at 0.70)
-  kv-cache-memory: "41000000000"                # 41G per box = 2,500,128 pooled KV tokens in bf16 (9.5× the 262K window; KV
-                                                # is split across the two boxes) — paid for by the half table above. Leaves
-                                                # ~6G host headroom on the head box after graph capture; do not take vLLM's
-                                                # "fully utilize" figure. (fp8 KV is not available in this image.)
+  kv-cache-memory: "28000000000"                # Full PLE replication leaves the v6 runtime within the safe per-rank memory
+                                                # budget; the final local ring acceptance uses this pin with K=5.
   compilation-config: '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,4,6,8,12,16,18,24,30,32,36,48,60,64,72,96,120,128,144,192,240,256,288,336,384],"compile_ranges_endpoints":[32]}'
                                                 # the engine rounds each full-graph size UP to a multiple of K+1 (=6) and
                                                 # drops sizes past the largest listed → the list must reach seats×6 = 384,

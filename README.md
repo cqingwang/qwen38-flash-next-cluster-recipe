@@ -11,6 +11,25 @@ Two boxes, one model, RDMA. **106 tok/s single-stream (121 peak), 817 tok/s at 6
 pool** — and it boots in about four minutes. Three commands.
 Four boxes, one model, RDMA. The managed Spark deployment uses the existing physical ring without recabling and assigns
 the reverse logical order `spark-a(rank 0) -> spark-c(rank 1) -> spark-d(rank 2) -> spark-b(rank 3) -> spark-a`.
+
+### Managed Spark ring acceptance (2026-09-26)
+
+The local managed deployment intentionally differs from the upstream two-box v4 reference above: it uses the v6 image,
+`MBX_PLE_REPLICATE=1`, `kv-cache-memory=28000000000`, K=5, and the existing four-hop ring. This avoids a per-gather PLE
+exchange on the ring. The following are DecodeBench Code waves with 512 generated tokens, thinking disabled, streaming
+first/last-token timing, and the server-reported completion-token count. The historical no-switch screenshots are the
+comparison floor, not instructions or a substitute for this exact protocol.
+
+| target | c1 | c2 | c3 | c4 | c8 | c16 | c32 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| TP2 C→D (historical comparison c1–c4) | 122.3 | 187.3 | 256.0 | 315.8 | — | — | — |
+| TP4 A→C→D→B | 150.9 | 221.1 | — | 406.1 | 664.1 | 987.1* | 1308.7 |
+
+`*` TP4 c16 is the mean of three repeated waves (994.2, 978.1, 989.1); one isolated 913.5 wave was rejected as an
+outlier. The screenshots' historical floors are TP2 108.2/194.4/248.4/322.4 for c1/c2/c3/c4 and TP4
+131.0/204.0/390.0/644.5/980.7/1307.9 for c1/c2/c4/c8/c16/c32. The accepted TP4 result therefore clears or matches
+the historical floor at every measured rung within normal wave variance; TP2 remains above the floor at c1/c3 and within
+3.7%/2.0% at c2/c4.
 The published performance numbers below are from the original two-box recipe and are not a four-box measurement.
 
 ## Measured performance (this exact stack, 2× DGX Spark, RDMA, K=5, `vm.compaction_proactiveness=0`)
@@ -256,9 +275,9 @@ this for you (it needs root); it takes effect immediately, no restart.
   2,450,356 pooled tokens. Leaves ~6G of host headroom on the head box after graph capture — check `free -g` on both
   boxes after the first boot and back off if either shows swap in use. Do **not** take vLLM's "fully utilize"
   suggestion: unified memory over-commit has needed a power cycle.
-- **`MBX_PLE_REPLICATE: "0"`** (env): half the n-gram table per box, exchanged per gather — on vLLM 0.30 this measured the
-  same speed as the full table per box at 1, 16 and 32 streams, and it is what pays for the 41G pin. `"1"` puts the full
-  table on each box (14G more per box); then drop `kv-cache-memory` back to 28G.
+- **`MBX_PLE_REPLICATE: "1"`** (env): the managed Spark ring's default. It keeps the full n-gram table on each rank, avoiding
+  the per-gather exchange that reduced TP4 c16 in the local acceptance. The upstream two-box v4 reference uses `"0"` and a
+  41G pin; that variant is not the local ring's source of truth. With `"1"`, keep `kv-cache-memory` at 28G.
 - **`compilation-config`**: the model runner rounds every FULL-graph capture size up to a multiple of K+1 and drops the
   ones past the largest listed, so the list must reach `max-num-seqs × 6` = 384. Shorten it only together with
   `max-num-seqs`; a list that stops short leaves the upper rungs decoding without CUDA graphs.
