@@ -18,7 +18,7 @@ the management `wlP9s9` interface remains bootstrap-only.
 
 The local managed deployment intentionally differs from the upstream two-box v4 reference above: it uses the v6 image,
 `MBX_PLE_REPLICATE=1`, `kv-cache-memory=28000000000`, K=5, and the existing four-hop ring. This avoids a per-gather PLE
-exchange on the ring. The following are DecodeBench Code waves with 512 generated tokens, thinking disabled, streaming
+exchange on the ring. The following are DecodeBench-like manual Code waves with 512 generated tokens, thinking disabled, streaming
 first/last-token timing, and the server-reported completion-token count. The historical no-switch screenshots are the
 comparison floor, not instructions or a substitute for this exact protocol.
 
@@ -26,6 +26,13 @@ comparison floor, not instructions or a substitute for this exact protocol.
 |---|---:|---:|---:|---:|---:|---:|---:|
 | TP2 C→D (historical comparison c1–c4) | 122.3 | 187.3 | 256.0 | 315.8 | — | — | — |
 | TP4 A→C→D→B | 150.9 | 221.1 | — | 406.1 | 664.1 | 987.1* | 1308.7 |
+
+The historical manual Code waves used a repeated clamp_00…clamp_49 prompt on every stream. Current SparkDash Code
+(since 1.8.7) uses a distinct Python task per stream, beginning with `binary_search` and `merge_sort`; `406.1` and a
+current SparkDash Code result therefore do not measure the same workload. The user-provided TP2 screenshot is preserved
+as SparkDash history job `cb14b302-1290-4cd5-8427-ab9d2d1aa727` (`promptType=code`, c1/c4 `124.46/339.58` before UI
+rounding), but that history lacks the exact prompt and Dash build identity, so its Code prompt cannot yet be assigned to
+either variant. Do not count a prompt switch as a model throughput gain.
 
 `*` TP4 c16 is the mean of three repeated waves (994.2, 978.1, 989.1); one isolated 913.5 wave was rejected as an
 outlier. The screenshots' historical floors are TP2 108.2/194.4/248.4/322.4 for c1/c2/c3/c4 and TP4
