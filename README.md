@@ -34,7 +34,10 @@ the historical floor at every measured rung within normal wave variance; TP2 rem
 3.7%/2.0% at c2/c4.
 On 2026-09-29, after the managed TP4 redeploy with the `/30` subnet-prefix fix, the same prose 512-token DecodeBench
 protocol produced Aggregate c1/c4 waves of `96.27/214.94`, `94.81/239.09`, and `94.36/237.32` tok/s. All streams
-completed with thinking disabled; these values exceed the current TP2 screenshot's 50% thresholds of `42.85/91.6` tok/s.
+completed with thinking disabled, but none reached the user's target of 50% higher throughput than the current TP2
+screenshot: Aggregate c1/c4 `85.7/183.2` × 1.5 = `128.55/274.8` tok/s. The corresponding Code c1/c4 target is
+`124.5/339.6` × 1.5 = `186.75/509.4` tok/s. Reproducible substantial gains should be saved to the local managed
+recipe and benchmark record even when these final targets remain unmet.
 The published performance numbers below are from the original two-box recipe and are not a four-box measurement.
 
 ## Measured performance (this exact stack, 2× DGX Spark, RDMA, K=5, `vm.compaction_proactiveness=0`)
