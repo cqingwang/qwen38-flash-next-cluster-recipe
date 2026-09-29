@@ -11,6 +11,8 @@ Two boxes, one model, RDMA. **106 tok/s single-stream (121 peak), 817 tok/s at 6
 pool** — and it boots in about four minutes. Three commands.
 Four boxes, one model, RDMA. The managed Spark deployment uses the existing physical ring without recabling and assigns
 the reverse logical order `spark-a(rank 0) -> spark-c(rank 1) -> spark-d(rank 2) -> spark-b(rank 3) -> spark-a`.
+The managed TP4 env also pins `NCCL_IB_SUBNET_PREFIX_LEN=30`, matching the four `/30` point-to-point fabric links;
+the management `wlP9s9` interface remains bootstrap-only.
 
 ### Managed Spark ring acceptance (2026-09-26)
 
@@ -30,6 +32,9 @@ outlier. The screenshots' historical floors are TP2 108.2/194.4/248.4/322.4 for 
 131.0/204.0/390.0/644.5/980.7/1307.9 for c1/c2/c4/c8/c16/c32. The accepted TP4 result therefore clears or matches
 the historical floor at every measured rung within normal wave variance; TP2 remains above the floor at c1/c3 and within
 3.7%/2.0% at c2/c4.
+On 2026-09-29, after the managed TP4 redeploy with the `/30` subnet-prefix fix, the same prose 512-token DecodeBench
+protocol produced Aggregate c1/c4 waves of `96.27/214.94`, `94.81/239.09`, and `94.36/237.32` tok/s. All streams
+completed with thinking disabled; these values exceed the current TP2 screenshot's 50% thresholds of `42.85/91.6` tok/s.
 The published performance numbers below are from the original two-box recipe and are not a four-box measurement.
 
 ## Measured performance (this exact stack, 2× DGX Spark, RDMA, K=5, `vm.compaction_proactiveness=0`)
