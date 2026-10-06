@@ -7,10 +7,11 @@ and [`hibrid48-uncensored`](https://huggingface.co/myllmbox/Qwen3.8-Flash-Next-h
 body, no refusals, no guardrails — gated, research / private use). Same stack. To switch: in `recipe.yaml`
 comment the active `model:` line and uncomment the other, then `./run.sh`. Details in [Which checkpoint](#which-checkpoint).
 
-Two boxes, one model, RDMA. **106 tok/s single-stream (121 peak), 817 tok/s at 64 streams (883 peak), a 2.45M-token KV
+Two boxes, one model, RDMA. **99 tok/s single-stream, 793 tok/s at 64 streams (834 peak), a 2.45M-token KV
 pool** — and it boots in about four minutes. Three commands.
-Four boxes, one model, RDMA. The managed Spark deployment uses the existing physical ring without recabling and assigns
-the reverse logical order `spark-a(rank 0) -> spark-c(rank 1) -> spark-d(rank 2) -> spark-b(rank 3) -> spark-a`.
+Four boxes, one model, RDMA. The managed Spark deployment uses the verified physical ring without recabling and assigns
+`spark-a(rank 0) -> spark-c(rank 1) -> spark-b(rank 2) -> spark-d(rank 3) -> spark-a`.
+The current direct links are f0: A-D and B-C, and f1: A-C and B-D; two-plane reachability does not imply all-to-all links.
 The managed TP4 env also pins `NCCL_IB_SUBNET_PREFIX_LEN=30`, matching the four `/30` point-to-point fabric links;
 the management `wlP9s9` interface remains bootstrap-only.
 
@@ -25,7 +26,7 @@ comparison floor, not instructions or a substitute for this exact protocol.
 | target | c1 | c2 | c3 | c4 | c8 | c16 | c32 |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | TP2 C→D (historical comparison c1–c4) | 122.3 | 187.3 | 256.0 | 315.8 | — | — | — |
-| TP4 A→C→D→B | 150.9 | 221.1 | — | 406.1 | 664.1 | 987.1* | 1308.7 |
+| TP4 A→C→D→B (historical; predates the 2026-10-06 port-level topology audit) | 150.9 | 221.1 | — | 406.1 | 664.1 | 987.1* | 1308.7 |
 
 The historical manual Code waves used a repeated clamp_00…clamp_49 prompt on every stream. Current SparkDash Code
 (since 1.8.7) uses a distinct Python task per stream, beginning with `binary_search` and `merge_sort`; `406.1` and a
