@@ -22,7 +22,7 @@ the management `wlP9s9` interface remains bootstrap-only.
 The checkpoint's native context window is 262,144 tokens. Following the official recipe, the managed TP2 and TP4 recipe
 extends it to the README's 400k setting: `max-model-len: 409600` and vLLM YaRN `factor=1.5625`, with
 `original_max_position_embeddings=262144`, `rope_theta=10000000`, `partial_rotary_factor=0.25`,
-`mrope_section=[11,11,10]`, and `mrope_interleaved=true` in the nested `hf-overrides.text_config` option. This follows the YaRN rule documented by the sibling `qwen3.8_27b_tensorfold` module;
+`mrope_section=[11,11,10]`, and `mrope_interleaved=true` in the nested `hf-overrides.text_config` option. This follows the YaRN rule documented by the upstream Qwen recipe;
 the long-window bypass environment switch is intentionally not used. Validate the live `/v1/models` response and a
 real request after deployment.
 
