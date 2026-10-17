@@ -79,15 +79,7 @@ NCCL_CONTAINER_DIR="${NCCL_CONTAINER_DIR:-/nccl}"
 NCCL_SO_NAME="${NCCL_SO_NAME:-libnccl.so.2}"
 NCCL_PIN_HOST="${NCCL_PIN_HOST:-/opt/aicad-prod/lib/libncclpin.so}"
 NCCL_PIN_CONTAINER="${NCCL_PIN_CONTAINER:-/opt/libncclpin.so}"
-if [ "$NNODES" = 2 ]; then
-  CONTAINER_HEAD="${CONTAINER_HEAD:-qwen38-flash-next-duo-tp2-head}"
-  CONTAINER_WORKER="${CONTAINER_WORKER:-qwen38-flash-next-duo-tp2-worker}"
-else
-  CONTAINER_HEAD="${CONTAINER_HEAD:-qwen38-flash-next-switchless-tp4-head}"
-  CONTAINER_WORKER="${CONTAINER_WORKER:-qwen38-flash-next-switchless-tp4-w1}"
-  CONTAINER_WORKER2="${CONTAINER_WORKER2:-qwen38-flash-next-switchless-tp4-w2}"
-  CONTAINER_WORKER3="${CONTAINER_WORKER3:-qwen38-flash-next-switchless-tp4-w3}"
-fi
+TARGET_CONTAINER_PREFIX="${TARGET_CONTAINER_PREFIX:-$TARGET_ENGINE_ID}"
 
 case "$NNODES:$TENSOR_PARALLEL_SIZE" in
   2:2|4:4) ;;
@@ -125,7 +117,7 @@ rank_value() {
     hca:0) printf '%s' "$HEAD_HCA" ;; hca:1) printf '%s' "$WORKER_HCA" ;; hca:2) printf '%s' "$WORKER2_HCA" ;; hca:3) printf '%s' "$WORKER3_HCA" ;;
     peer:0) printf '%s' "$PEER_HCA_RANK0" ;; peer:1) printf '%s' "$PEER_HCA_RANK1" ;; peer:2) printf '%s' "$PEER_HCA_RANK2" ;; peer:3) printf '%s' "$PEER_HCA_RANK3" ;;
     fabric:0) printf '%s' "$HEAD_FABRIC_IFACES" ;; fabric:1) printf '%s' "$WORKER_FABRIC_IFACES" ;; fabric:2) printf '%s' "$WORKER2_FABRIC_IFACES" ;; fabric:3) printf '%s' "$WORKER3_FABRIC_IFACES" ;;
-    container:0) printf '%s' "$CONTAINER_HEAD" ;; container:1) printf '%s' "$CONTAINER_WORKER" ;; container:2) printf '%s' "$CONTAINER_WORKER2" ;; container:3) printf '%s' "$CONTAINER_WORKER3" ;;
+    container:0|container:1|container:2|container:3) printf '%s-r%s' "$TARGET_CONTAINER_PREFIX" "$rank" ;;
     *) fail "非法 rank/字段: $field:$rank" ;;
   esac
 }

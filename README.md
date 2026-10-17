@@ -34,7 +34,7 @@ comparison floor, not instructions or a substitute for this exact protocol.
 
 | target | c1 | c2 | c3 | c4 | c8 | c16 | c32 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| TP2 C→D (historical comparison c1–c4) | 122.3 | 187.3 | 256.0 | 315.8 | — | — | — |
+| TP2 C→D (historical comparison only; retired because C-D is not a current direct fabric edge) | 122.3 | 187.3 | 256.0 | 315.8 | — | — | — |
 | TP4 A→C→D→B (historical; predates the 2026-10-06 port-level topology audit) | 150.9 | 221.1 | — | 406.1 | 664.1 | 987.1* | 1308.7 |
 
 The historical manual Code waves used a repeated clamp_00…clamp_49 prompt on every stream. Current SparkDash Code
