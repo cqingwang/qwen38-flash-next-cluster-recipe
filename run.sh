@@ -177,10 +177,11 @@ check_rank_assets() {
 check_rank_image() {
   local rank="$1" nccl_dir
   if [ "$rank" = 0 ]; then
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull -q "$IMAGE" >/dev/null
+    docker image inspect "$IMAGE" >/dev/null 2>&1 \
+      || fail "rank 0 镜像不存在: $IMAGE；请先人工完成镜像初始化"
   else
-    worker_ssh_rank "$rank" "docker image inspect '$IMAGE' >/dev/null 2>&1 || docker pull -q '$IMAGE' >/dev/null" \
-      || fail "rank $rank 无法准备镜像: $IMAGE"
+    worker_ssh_rank "$rank" "docker image inspect '$IMAGE' >/dev/null 2>&1" \
+      || fail "rank $rank 镜像不存在: $IMAGE；请先人工完成镜像初始化"
   fi
   [ "$USE_HOST_NCCL" = 1 ] || return 0
   nccl_dir="$(rank_nccl_dir "$rank")"
