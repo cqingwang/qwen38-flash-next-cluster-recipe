@@ -17,13 +17,15 @@ the management `wlP9s9` interface remains bootstrap-only.
 
 ### Managed Spark ring acceptance (2026-09-26)
 
-### Managed 400k context with YaRN
+### Managed context with YaRN
 
-The checkpoint's native context window is 262,144 tokens. Following the official recipe, the managed TP2 and TP4 recipe
-extends it to the README's 400k setting: `max-model-len: 409600` and vLLM YaRN `factor=1.5625`, with
+The checkpoint's native context window is 262,144 tokens. The managed TP2 and TP4 recipe takes its effective context
+from `common.max_token` in `spark/config.yaml`; the current deployment uses `512000`, so vLLM receives
+`max-model-len=512000` and YaRN `factor=1.953125`, with
 `original_max_position_embeddings=262144`, `rope_theta=10000000`, `partial_rotary_factor=0.25`,
-`mrope_section=[11,11,10]`, and `mrope_interleaved=true` in the nested `hf-overrides.text_config` option. This follows the YaRN rule documented by the upstream Qwen recipe;
-the long-window bypass environment switch is intentionally not used. Validate the live `/v1/models` response and a
+`mrope_section=[11,11,10]`, and `mrope_interleaved=true` in the nested `hf-overrides.text_config` option. `run.sh`
+derives the position limit and factor from `MAX_MODEL_LEN`, so changing the common value does not leave a stale
+derived limit behind; the long-window bypass environment switch is intentionally not used. Validate the live `/v1/models` response and a
 real request after deployment.
 
 The local managed deployment intentionally differs from the upstream two-box v4 reference above: it uses the v6 image,

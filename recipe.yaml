@@ -77,9 +77,8 @@ vllm:
                                                 # the automatic 1616 does not, 1632 does (drop this line if you go back to K=4)
   load-format: fastsafetensors                  # the loader every boot figure below was measured with (weights in ~97 s,
                                                 # the whole boot ~4 min); remove for vLLM's default safetensors loader
-  hf-overrides: '{"text_config":{"max_position_embeddings":409600,"rope_parameters":{"rope_type":"yarn","factor":1.5625,"original_max_position_embeddings":262144,"rope_theta":10000000,"partial_rotary_factor":0.25,"mrope_section":[11,11,10],"mrope_interleaved":true}}}'
-                                                # 按官方 recipe：262144 × 1.5625 = 409600；v6 还需同步覆盖派生长度。
-  max-model-len: 409600                         # 官方 README 将 409600 作为 400k 上下文配置
+                                                # run.sh derives hf-overrides.text_config and max-model-len from the
+                                                # managed MAX_MODEL_LEN; the recipe has no fixed context-length value.
   max-num-seqs: 64                              # 64 seats × ~38k tokens of pool each (2.45M / 64). With K=5 each running request
                                                 # pins more pool at admission (the model's GDN recurrent state + the longer draft
                                                 # ring): 64 long answers fill the pool after ~3 min and requests start to queue.

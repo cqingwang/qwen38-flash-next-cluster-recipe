@@ -68,7 +68,7 @@ PORT="${PORT:-8888}"
 MASTER_PORT="${MASTER_PORT:-25000}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-4}"
 NNODES="${NNODES:-4}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-$(rkey vllm max-model-len)}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$MODEL_ID}"
 IMAGE="${IMAGE:-$(rkey server image)}"
 CPUSET="${CPUSET:-$(rkey server cpuset)}"
@@ -88,6 +88,10 @@ esac
 for required in MODEL_PATH MODEL_ID HEAD_IP WORKER_IP WORKER_SSH IMAGE MAX_MODEL_LEN SERVED_MODEL_NAME HEAD_SOCKET_IFACE HEAD_HCA; do
   [ -n "${!required:-}" ] || fail "缺少必需配置: $required"
 done
+case "$MAX_MODEL_LEN" in
+  ''|*[!0-9]*) fail "MAX_MODEL_LEN 必须是整数: $MAX_MODEL_LEN" ;;
+esac
+[ "$MAX_MODEL_LEN" -ge 262144 ] || fail "MAX_MODEL_LEN 不能低于 checkpoint 原生上限 262144: $MAX_MODEL_LEN"
 if [ "$NNODES" = 4 ]; then
   for required in WORKER2_IP WORKER3_IP WORKER2_SSH WORKER3_SSH; do
     [ -n "${!required:-}" ] || fail "TP4 缺少必需配置: $required"
@@ -202,14 +206,39 @@ check_rank_fabric() {
     || fail "rank $rank fabric 网卡未绑定 RDMA 设备: $fabric_ifaces"
 }
 
+render_hf_overrides() {
+  python3 - "$MAX_MODEL_LEN" <<'PY'
+import json
+import sys
+
+max_model_len = int(sys.argv[1])
+original_max_position_embeddings = 262144
+print(json.dumps({
+    "text_config": {
+        "max_position_embeddings": max_model_len,
+        "rope_parameters": {
+            "rope_type": "yarn",
+            "factor": max_model_len / original_max_position_embeddings,
+            "original_max_position_embeddings": original_max_position_embeddings,
+            "rope_theta": 10000000,
+            "partial_rotary_factor": 0.25,
+            "mrope_section": [11, 11, 10],
+            "mrope_interleaved": True,
+        },
+    },
+}, separators=(",", ":")))
+PY
+}
+
 build_flags() {
-  local key value
+  local key value hf_overrides
   FLAGS=()
+  hf_overrides="$(render_hf_overrides)"
   while IFS=$'\t' read -r key value; do
-    case "$key" in max-model-len|served-model-name) continue ;; esac
+    case "$key" in max-model-len|served-model-name|hf-overrides) continue ;; esac
     case "$value" in true) FLAGS+=("--$key") ;; false|null|"") ;; *) FLAGS+=("--$key" "$value") ;; esac
   done < <(rsection vllm)
-  FLAGS+=(--max-model-len "$MAX_MODEL_LEN" --served-model-name "$SERVED_MODEL_NAME")
+  FLAGS+=(--hf-overrides "$hf_overrides" --max-model-len "$MAX_MODEL_LEN" --served-model-name "$SERVED_MODEL_NAME")
 }
 
 compose_rank() {
